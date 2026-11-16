@@ -42,7 +42,8 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const isProd = process.env.NODE_ENV === 'production';
+const isRunningBundled = path.basename(__filename) === 'server.js';
+const isProd = process.env.NODE_ENV === 'production' || isRunningBundled;
 const port = isProd ? Number(process.env.PORT) || 8080 : 3000;
 
 const app = express();
