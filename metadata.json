@@ -1,0 +1,6 @@
+{
+  "name": "房仲報告書 - 專業不動產銷售評估與買方分析系統",
+  "description": "專為台灣成屋住宅打造的專業房仲評估報告工具，支援多來源物件匯入校對、屋主銷售評估與買方購屋評估雙版本、AI 智慧查核與 A4 列印匯出。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
