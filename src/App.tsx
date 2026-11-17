@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   FileText,
   Plus,
@@ -24,7 +24,7 @@ import {
   Check,
   Server,
 } from 'lucide-react';
-import { PropertyData } from './types/property';
+import { PropertyData, hasUnresolvedPrice } from './types/property';
 import { ReportDocument, BrokerProfile } from './types/report';
 import { DEFAULT_BROKER } from './utils/mockData';
 import { Header } from './components/Header';
@@ -50,6 +50,9 @@ export default function App() {
   // Properties state (persisted in MongoDB via /api/properties)
   const [properties, setProperties] = useState<PropertyData[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('');
+  const [propertyDrafts, setPropertyDrafts] = useState<PropertyData[]>([]);
+  const [savingDraftId, setSavingDraftId] = useState<string | null>(null);
+  const savingDraftRef = useRef(false);
 
   // Reports state (persisted in MongoDB via /api/reports)
   const [reports, setReports] = useState<ReportDocument[]>([]);
@@ -133,170 +136,172 @@ export default function App() {
   }, []);
 
   // Active property & report getters
-  const activeProperty = properties.find((p) => p.id === selectedPropertyId) || properties[0];
+  const selectableProperties = [...propertyDrafts, ...properties];
+  const activeProperty = selectableProperties.find((p) => p.id === selectedPropertyId) || selectableProperties[0];
+  const isActiveDraft = propertyDrafts.some((draft) => draft.id === activeProperty?.id);
+  const isActivePriceUnresolved = activeProperty ? hasUnresolvedPrice(activeProperty) : false;
   const activeReport = reports.find((r) => r.id === selectedReportId) || reports[0];
 
-  // Import or Add property handler (persists to MongoDB)
   const handleImportProperty = async (
     imported: PropertyData,
     action: ImportMergeAction,
     matchedExistingId?: string
   ) => {
-    const findMatchedExisting = () => {
-      if (matchedExistingId) {
-        const byId = properties.find((p) => p.id === matchedExistingId);
-        if (byId) return byId;
-      }
-      if (imported.sourcePlatform && imported.sourceListingId) {
-        const byExt = properties.find(
-          (p) =>
-            p.sourcePlatform === imported.sourcePlatform &&
-            p.sourceListingId === imported.sourceListingId
-        );
-        if (byExt) return byExt;
-      }
-      return properties.find(
-        (p) => p.caseId === imported.caseId || p.caseName === imported.caseName
-      );
+    const openProperty = (id: string) => {
+      setSelectedPropertyId(id);
+      setActiveTab('properties');
     };
 
+    if (action === 'create' || action === 'copy') {
+      const id = crypto.randomUUID();
+      const draft = {
+        ...imported,
+        id: `prop-${id}`,
+        caseId: action === 'copy' ? `IMP-${id.slice(0, 8).toUpperCase()}` : imported.caseId,
+        layout: normalizeLayoutInput(imported.layout),
+      };
+      setPropertyDrafts((prev) => [draft, ...prev]);
+      openProperty(draft.id);
+      return;
+    }
+
+    const existing = properties.find((p) => p.id === matchedExistingId);
+    if (!existing) throw new Error('物件庫已更新，請重新選取物件。');
+
     if (action === 'reuse') {
-      const existing = findMatchedExisting();
-      if (existing) {
-        setSelectedPropertyId(existing.id);
-        setActiveTab('properties');
-        return;
+      openProperty(existing.id);
+      return;
+    }
+
+    const verifiedKeys = existing.fieldStatus || {};
+    const mergedFieldStatus = { ...(existing.fieldStatus || {}) };
+    const mergedEvidence = { ...(existing.evidenceSummaries || {}) };
+    const merged: PropertyData = { ...existing };
+    const mergedConflicts = [...(existing.conflicts || [])];
+
+    const mergeableKeys: Array<keyof PropertyData> = [
+      'caseName',
+      'cityDistrict',
+      'address',
+      'propertyType',
+      'askingPrice',
+      'previousAskingPrice',
+      'totalArea',
+      'mainArea',
+      'auxArea',
+      'commonArea',
+      'hasParking',
+      'parkingIncluded',
+      'parkingType',
+      'parkingOwnership',
+      'parkingArea',
+      'parkingAreaIncludedInCommon',
+      'parkingPrice',
+      'layout',
+      'floor',
+      'totalFloors',
+      'floorRaw',
+      'age',
+      'managementFee',
+      'managementFeeAmount',
+      'managementFeePeriod',
+      'managementFeeRaw',
+      'currentUsage',
+    ];
+
+    const hasMeaningfulValue = (val: unknown) =>
+      val !== null && val !== undefined && val !== '';
+
+    for (const k of mergeableKeys) {
+      const statusKey = k as string;
+      const isMgmtCoupled =
+        k === 'managementFeeAmount' ||
+        k === 'managementFeePeriod' ||
+        k === 'managementFeeRaw';
+      const effectiveStatus = isMgmtCoupled
+        ? verifiedKeys['managementFee']
+        : verifiedKeys[statusKey];
+
+      if (effectiveStatus === 'verified' || effectiveStatus === 'not_applicable' ||
+          effectiveStatus === 'conflict' ||
+          mergedConflicts.some((conflict) => conflict.field === k && !conflict.resolved)) {
+        continue;
+      }
+
+      const incomingConflict = imported.conflicts?.find((conflict) => conflict.field === k && !conflict.resolved);
+      if (incomingConflict) {
+        mergedConflicts.push(incomingConflict);
+        mergedFieldStatus[statusKey] = 'conflict';
+        continue;
+      }
+      if (imported.fieldStatus?.[statusKey] === 'conflict') {
+        mergedFieldStatus[statusKey] = 'conflict';
+        continue;
+      }
+
+      const incomingVal = imported[k];
+      if (hasMeaningfulValue(incomingVal)) {
+        Object.assign(merged, { [k]: incomingVal });
+        if (imported.fieldStatus?.[statusKey]) {
+          mergedFieldStatus[statusKey] = imported.fieldStatus[statusKey];
+        }
+        if (imported.evidenceSummaries?.[statusKey]) {
+          mergedEvidence[statusKey] = imported.evidenceSummaries[statusKey];
+        }
       }
     }
 
-    if (action === 'merge_unverified') {
-      const existing = findMatchedExisting();
-      if (existing) {
-        const verifiedKeys = existing.fieldStatus || {};
-        const mergedFieldStatus = { ...(existing.fieldStatus || {}) };
-        const mergedEvidence = { ...(existing.evidenceSummaries || {}) };
-        const merged: any = { ...existing };
+    const mergedPayload: PropertyData = {
+      ...merged,
+      id: existing.id,
+      caseId: existing.caseId,
+      fieldStatus: mergedFieldStatus,
+      conflicts: mergedConflicts,
+      evidenceSummaries: mergedEvidence,
+      sourcePlatform: imported.sourcePlatform || existing.sourcePlatform,
+      sourceListingId: imported.sourceListingId || existing.sourceListingId,
+      sourceUrl: imported.sourceUrl || existing.sourceUrl,
+      fetchedAt: imported.fetchedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
 
-        const mergeableKeys: Array<keyof PropertyData> = [
-          'caseName',
-          'cityDistrict',
-          'address',
-          'propertyType',
-          'askingPrice',
-          'previousAskingPrice',
-          'totalArea',
-          'mainArea',
-          'auxArea',
-          'commonArea',
-          'hasParking',
-          'parkingIncluded',
-          'parkingType',
-          'parkingOwnership',
-          'parkingArea',
-          'parkingAreaIncludedInCommon',
-          'parkingPrice',
-          'layout',
-          'floor',
-          'totalFloors',
-          'floorRaw',
-          'age',
-          'managementFee',
-          'managementFeeAmount',
-          'managementFeePeriod',
-          'managementFeeRaw',
-          'currentUsage',
-        ];
+    const res = await fetch(`/api/properties/${encodeURIComponent(existing.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mergedPayload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.property) throw new Error(data.error || '更新既有物件失敗。');
+    setProperties((prev) => prev.map((p) => (p.id === existing.id ? data.property : p)));
+    openProperty(existing.id);
+  };
 
-        const hasMeaningfulValue = (val: any) =>
-          val !== null && val !== undefined && val !== '';
-
-        for (const k of mergeableKeys) {
-          const statusKey = k as string;
-          const isMgmtCoupled =
-            k === 'managementFeeAmount' ||
-            k === 'managementFeePeriod' ||
-            k === 'managementFeeRaw';
-          const effectiveStatus = isMgmtCoupled
-            ? verifiedKeys['managementFee']
-            : verifiedKeys[statusKey];
-
-          if (effectiveStatus === 'verified') {
-            continue; // 嚴格保護已手動核對欄位
-          }
-
-          const incomingVal = (imported as any)[k];
-          if (hasMeaningfulValue(incomingVal)) {
-            merged[k] = incomingVal;
-            if (imported.fieldStatus?.[statusKey]) {
-              mergedFieldStatus[statusKey] = imported.fieldStatus[statusKey];
-            }
-            if (imported.evidenceSummaries?.[statusKey]) {
-              mergedEvidence[statusKey] = imported.evidenceSummaries[statusKey];
-            }
-          }
-        }
-
-        // 保留管理費月均值對應狀態
-        if (verifiedKeys['managementFee'] !== 'verified') {
-          if (imported.fieldStatus?.managementFee) {
-            mergedFieldStatus.managementFee = imported.fieldStatus.managementFee;
-          }
-          if (imported.evidenceSummaries?.managementFee) {
-            mergedEvidence.managementFee = imported.evidenceSummaries.managementFee;
-          }
-        }
-
-        const mergedPayload: PropertyData = {
-          ...merged,
-          id: existing.id,
-          caseId: existing.caseId,
-          fieldStatus: mergedFieldStatus,
-          evidenceSummaries: mergedEvidence,
-          sourcePlatform: imported.sourcePlatform || existing.sourcePlatform,
-          sourceListingId: imported.sourceListingId || existing.sourceListingId,
-          sourceUrl: imported.sourceUrl || existing.sourceUrl,
-          fetchedAt: imported.fetchedAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        try {
-          const res = await fetch(`/api/properties/${existing.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(mergedPayload),
-          });
-          const data = await res.json();
-          const savedMerged = data.property || mergedPayload;
-          setProperties((prev) =>
-            prev.map((p) => (p.id === existing.id ? savedMerged : p))
-          );
-          setSelectedPropertyId(existing.id);
-          setActiveTab('properties');
-        } catch (err: any) {
-          setToastError(`更新既有物件失敗: ${err.message}`);
-        }
-        return;
-      }
+  const handleSaveImportedDraft = async (draft: PropertyData) => {
+    if (savingDraftRef.current) return;
+    if (!draft.caseName.trim()) {
+      setToastError('請填寫案名後再存入物件庫。');
+      return;
     }
 
+    savingDraftRef.current = true;
+    setSavingDraftId(draft.id);
+    setToastError(null);
     try {
+      const payload = { ...draft, caseName: draft.caseName.trim(), layout: normalizeLayoutInput(draft.layout) };
       const res = await fetch('/api/properties', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(imported),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '儲存物件失敗');
-
-      const savedProp = {
-        ...(data.property || imported),
-        layout: normalizeLayoutInput((data.property || imported).layout),
-      };
-      setProperties((prev) => [savedProp, ...prev.filter((p) => p.id !== savedProp.id)]);
-      setSelectedPropertyId(savedProp.id);
-      setActiveTab('properties');
-    } catch (err: any) {
-      setToastError(`儲存物件至資料庫失敗: ${err.message}`);
+      if (!res.ok || !data.property) throw new Error(data.error || '資料庫未確認儲存。');
+      setProperties((prev) => [data.property, ...prev.filter((p) => p.id !== draft.id)]);
+      setPropertyDrafts((prev) => prev.filter((p) => p.id !== draft.id));
+    } catch {
+      setToastError('物件尚未存入資料庫。校對資料仍保留在此頁，請檢查資料庫連線後再試。');
+    } finally {
+      savingDraftRef.current = false;
+      setSavingDraftId(null);
     }
   };
 
@@ -306,15 +311,20 @@ export default function App() {
       ...updated,
       layout: updated.layout === '待確認' ? '' : updated.layout,
     };
+    if (propertyDrafts.some((draft) => draft.id === cleanUpdated.id)) {
+      setPropertyDrafts((prev) => prev.map((draft) => (draft.id === cleanUpdated.id ? cleanUpdated : draft)));
+      return;
+    }
     setProperties((prev) => prev.map((p) => (p.id === cleanUpdated.id ? cleanUpdated : p)));
     try {
-      await fetch(`/api/properties/${cleanUpdated.id}`, {
+      const res = await fetch(`/api/properties/${encodeURIComponent(cleanUpdated.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cleanUpdated),
       });
-    } catch (err) {
-      console.error('Failed to update property in MongoDB:', err);
+      if (!res.ok) throw new Error('資料庫未確認更新');
+    } catch {
+      setToastError('變更僅保留在此頁，尚未存入物件庫。請檢查資料庫連線。');
     }
   };
 
@@ -537,7 +547,7 @@ export default function App() {
                   </div>
                   <div className="font-bold text-slate-900 text-sm truncate">{p.caseName}</div>
                   <div className="text-xs text-slate-500">
-                    開價 {formatWan(p.askingPrice)} ｜ 權狀 {formatPing(p.totalArea)} ｜ {formatLayout(p.layout)}
+                    開價 {hasUnresolvedPrice(p) ? '待核對' : formatWan(p.askingPrice)} ｜ 權狀 {formatPing(p.totalArea)} ｜ {formatLayout(p.layout)}
                   </div>
                 </div>
               ))}
@@ -732,7 +742,7 @@ export default function App() {
         {/* ========================================================================= */}
         {!isLoading && !fetchError && activeTab === 'properties' && (
           <div className="space-y-4">
-            {properties.length > 0 ? (
+            {selectableProperties.length > 0 ? (
               <>
                 {/* Property Selector Bar */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
@@ -743,9 +753,9 @@ export default function App() {
                       onChange={(e) => setSelectedPropertyId(e.target.value)}
                       className="px-3 py-1.5 border border-slate-300 rounded-xl text-xs bg-white font-bold text-slate-900"
                     >
-                      {properties.map((p) => (
+                      {selectableProperties.map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.caseName} ({p.caseId}) - {formatWan(p.askingPrice)}
+                          {p.caseName} ({p.caseId}) - {hasUnresolvedPrice(p) ? '開價待核對' : formatWan(p.askingPrice)}
                         </option>
                       ))}
                     </select>
@@ -765,14 +775,33 @@ export default function App() {
 
                 {/* Proofread Form Component */}
                 {activeProperty && (
-                  <PropertyProofreadForm
-                    property={activeProperty}
-                    onSaveProperty={handleSaveProperty}
-                    onProceedToReport={(prop) => {
-                      setSelectedPropertyId(prop.id);
-                      setActiveTab('creator');
-                    }}
-                  />
+                  <>
+                    {isActiveDraft && (
+                      <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+                        <p>此物件尚未存入物件庫。校對內容暫存在此頁，重新整理後會消失。</p>
+                        <button
+                          type="button"
+                          disabled={savingDraftId !== null}
+                          onClick={() => handleSaveImportedDraft(activeProperty)}
+                          className="rounded-lg bg-blue-700 px-4 py-2 font-bold text-white disabled:opacity-50"
+                        >
+                          {savingDraftId === activeProperty.id ? '儲存中…' : '存入物件庫'}
+                        </button>
+                      </div>
+                    )}
+                    <fieldset disabled={savingDraftId === activeProperty.id} className="min-w-0">
+                      <PropertyProofreadForm
+                        key={activeProperty.id}
+                        property={activeProperty}
+                        onSaveProperty={handleSaveProperty}
+                        reportBlocked={isActiveDraft}
+                        onProceedToReport={(prop) => {
+                          setSelectedPropertyId(prop.id);
+                          setActiveTab('creator');
+                        }}
+                      />
+                    </fieldset>
+                  </>
                 )}
               </>
             ) : (
@@ -798,11 +827,20 @@ export default function App() {
         {/* TAB 3: REPORT CREATOR CENTER                                              */}
         {/* ========================================================================= */}
         {!isLoading && !fetchError && activeTab === 'creator' && activeProperty && (
-          <ReportCreatorModal
-            property={activeProperty}
-            onReportCreated={handleReportCreated}
-            onCancel={() => setActiveTab('properties')}
-          />
+          isActiveDraft || isActivePriceUnresolved ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p>{isActivePriceUnresolved ? '開價來源有衝突，請先在校對表單人工確認現行開價。' : '請先將校對草稿存入物件庫。'}</p>
+              <button type="button" onClick={() => setActiveTab('properties')} className="mt-2 font-bold underline">
+                返回物件校對
+              </button>
+            </div>
+          ) : (
+            <ReportCreatorModal
+              property={activeProperty}
+              onReportCreated={handleReportCreated}
+              onCancel={() => setActiveTab('properties')}
+            />
+          )
         )}
 
         {/* ========================================================================= */}
