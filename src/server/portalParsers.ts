@@ -923,6 +923,50 @@ function parse591Deterministic(
   };
 }
 
+export function parsePacificRenderedListing(
+  listing: PortalParseResult,
+  visible: { name: string; address: string; price: string; previousPrice: string; specifications: string }
+): PortalParseResult | null {
+  if (!visible.name) return null;
+  const readPrice = (label: string) => {
+    const value = label.match(/^([\d,]+(?:\.\d+)?)\s*萬(?:元)?$/)?.[1];
+    const parsed = value ? Number(value.replace(/,/g, '')) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  const price = readPrice(visible.price);
+  if (price === null) return null;
+
+  const { parsedFields, fieldStatus, evidenceSummaries } = parsePastedListingTextDeterministic(visible.specifications);
+  const add = (field: string, value: string | number | null, quote: string) => {
+    if (value === null || value === '') return;
+    parsedFields[field] = value;
+    fieldStatus[field] = 'recorded';
+    evidenceSummaries[field] = quote;
+  };
+  const { cityDistrict, remainingAddress } = extractCityDistrictFromText(visible.address);
+  add('caseName', visible.name, '官網物件案名：' + visible.name);
+  add('address', remainingAddress || visible.address, '官網地址：' + visible.address);
+  add('cityDistrict', cityDistrict, '官網地址：' + visible.address);
+  add('askingPrice', price, '官網現行開價：' + visible.price);
+  add('previousAskingPrice', readPrice(visible.previousPrice), '官網劃線原開價：' + visible.previousPrice);
+  return {
+    ...listing,
+    pageType: 'single_listing',
+    pageTypeReason: '已讀取太平洋房屋公開頁面載入後的物件規格。',
+    parsedFields: {
+      ...parsedFields,
+      sourcePlatform: listing.sourcePlatform,
+      sourceListingId: listing.sourceListingId,
+      caseId: listing.sourceListingId,
+    },
+    fieldStatus,
+    evidenceSummaries,
+    parseConfidence: 'high',
+    rawCleanedText: [visible.name, visible.address, '開價：' + visible.price, visible.specifications].filter(Boolean).join('\n'),
+    needsAiGapFill: false,
+  };
+}
+
 export function parsePortalListingHtml(urlStr: string, rawHtml: string): PortalParseResult {
   const fetchedAt = new Date().toISOString();
   const rawCleanedText = cleanPortalHtml(rawHtml);
@@ -1108,7 +1152,7 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     setField('parkingAreaIncludedInCommon', true, 'recorded', `貼上文字公設內含車位：「${commonWithParkM[0].trim()}」`);
     setField('hasParking', true, 'recorded', `貼上文字公設內含車位：「${commonWithParkM[0].trim()}」`);
   } else {
-    const commonM = text.match(/(?:共有部分|公共設施|公設)[\s：:]*([\d.]+)\s*坪/);
+    const commonM = text.match(/(?:共有部分|公共設施|公設)(?:坪數)?[\s：:]*([\d.]+)\s*坪/);
     if (commonM) {
       setField('commonArea', Number(commonM[1]), 'recorded', `貼上文字共有部分：「${commonM[0].trim()}」`);
     }
