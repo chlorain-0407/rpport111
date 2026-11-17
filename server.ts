@@ -1,8 +1,8 @@
 import express, { Request, Response } from 'express';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { parseArgs } from 'node:util';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { getDb, initDbIndexes } from './src/server/db';
 import { readPacificListing } from './src/server/pacificListing';
@@ -39,14 +39,23 @@ import {
 } from './src/types/report';
 import type { FieldVerificationStatus } from './src/types/property';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isRunningBundled = path.basename(__filename) === 'server.js';
 const isProd = process.env.NODE_ENV === 'production' || isRunningBundled;
-const port = Number(process.env.PORT) || (isProd ? 8080 : 3000);
+// Accept the hosting platform's CLI flags in both dev and preview. PORT is authoritative.
+const { values: startupOptions } = parseArgs({
+  options: {
+    host: { type: 'string' },
+    port: { type: 'string' },
+  },
+});
+const configuredPort = process.env.PORT?.trim() || startupOptions.port || '3000';
+const port = Number(configuredPort);
+if (!/^\d+$/.test(configuredPort) || port < 1 || port > 65535) {
+  throw new Error('PORT or --port must be an integer between 1 and 65535.');
+}
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
