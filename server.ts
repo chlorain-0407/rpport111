@@ -5,6 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { getDb, initDbIndexes } from './src/server/db';
+import { readPacificListing } from './src/server/pacificListing';
 import {
   DEMO_PROPERTIES,
   DEFAULT_BROKER,
@@ -25,6 +26,7 @@ import {
 } from './src/utils/calculator';
 import {
   parsePortalListingHtml,
+  parsePacificRenderedListing,
   flattenPostalAddress,
   cleanPortalHtml,
   detectPageTypeAndTarget,
@@ -1591,7 +1593,12 @@ app.post('/api/extract/url', async (req: Request, res: Response) => {
 
   // Stage 2 & Stage 3: Classify page type, detect target ID, & run deterministic site rules BEFORE AI
   const tParseStart = Date.now();
-  const parsedPortal = parsePortalListingHtml(url, rawBody);
+  let parsedPortal = parsePortalListingHtml(url, rawBody);
+  if (parsedPortal.pageType === 'template_only' && parsedPortal.sourcePlatform === '太平洋房屋' && parsedPortal.sourceListingId) {
+    const rendered = await readPacificListing(parsedPortal.sourceListingId, clientAbortController.signal);
+    if (rendered) parsedPortal = parsePacificRenderedListing(parsedPortal, rendered) || parsedPortal;
+    if (clientAbortController.signal.aborted) return;
+  }
 
   // Merge any deterministic fields preserved from an earlier fetch (e.g. JSON-LD fields on cachedText retry)
   if (priorData && typeof priorData === 'object') {
