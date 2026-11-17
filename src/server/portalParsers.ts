@@ -38,11 +38,11 @@ export function detectPlatformAndId(urlStr: string): { platform: string; listing
       const m = u.pathname.match(/detail\/\d+\/(\d+)\.html/i) || u.pathname.match(/(\d{6,})/);
       return { platform: '591房屋交易', listingId: m ? m[1] : '' };
     }
-    if (host.includes('pacific.com.tw')) {
-      const m = u.pathname.match(/Object\/(\d+|[A-Z0-9-]+)/i) || u.searchParams.get('id');
-      const idVal = Array.isArray(m) ? m[1] : typeof m === 'string' ? m : '';
-      if (/MapSearch|Search|List/i.test(idVal)) return { platform: '太平洋房屋', listingId: '' };
-      return { platform: '太平洋房屋', listingId: idVal };
+    if (host === 'pacific.com.tw' || host === 'www.pacific.com.tw') {
+      const queryId = [...u.searchParams].find(([key]) => /^(?:saleid|id)$/i.test(key))?.[1];
+      const pathId = u.pathname.match(/\/object\/([a-z]{0,3}\d{5,})\/?$/i)?.[1];
+      const id = queryId || pathId || '';
+      return { platform: '太平洋房屋', listingId: /^[a-z]{0,3}\d{5,}$/i.test(id) ? id.toUpperCase() : '' };
     }
     if (host.includes('sinyi.com.tw')) {
       const m = u.pathname.match(/([A-Z0-9]{5,12})/i);
@@ -271,6 +271,17 @@ export function detectPageTypeAndTarget(
       ) &&
       (obj.name || obj.offers || obj.sku || obj.productID)
   );
+
+  const isPacificDetail = platform === '太平洋房屋' && /^\/object\/object(?:detail|print)\/?$/.test(pathname);
+  const hasPacificSpecs = /(?:主建物\s*坪數|坪\s*數)\s*[:：]?\s*\d+(?:\.\d+)?\s*坪/.test(cleanedText);
+  if (isPacificDetail && !hasPropertyJsonLd && !hasPacificSpecs && /\{\{\s*[^{}]+\}\}/.test(rawHtml)) {
+    return {
+      pageType: 'template_only',
+      reason: '太平洋房屋會在瀏覽器開啟後載入物件規格。請開啟原頁，複製物件摘要、房屋詳細資料和坪數資料，或使用這些區塊的截圖。',
+      platform,
+      listingId,
+    };
+  }
 
   if (cleanedText.length < 120 && !hasPropertyJsonLd) {
     return {
@@ -1052,7 +1063,7 @@ export function parsePastedListingTextDeterministic(rawText: string): {
   }
 
   const floorLineM =
-    text.match(/樓層[\s：:]*([^\n]+)/) ||
+    text.match(/樓層(?:\s*[\/／]\s*樓高)?[\s：:]*([^\n]+)/) ||
     text.match(/((?:地下\d+層|B\d+|\d+)\s*(?:樓|F)?\s*[\/／]\s*(?:共\s*)?\d+\s*(?:樓|F))/i);
   if (floorLineM) {
     const rawFloor = (floorLineM[1] || floorLineM[0]).trim();
@@ -1066,22 +1077,24 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     }
   }
 
-  const ageM = text.match(/屋齡[\s：:]*([\d.]+)\s*年/) || text.match(/(?:^|\s)([\d.]+)\s*年(?=\s*(?:電梯大樓|華廈|透天|公寓|屋齡型態|\n))/);
+  const ageM = text.match(/屋齡[\s：:]*([\d.]+)\s*年(?:[ \t]*(\d{1,2})\s*(?:個)?月)?/) || text.match(/(?:^|\s)([\d.]+)\s*年(?=\s*(?:電梯大樓|華廈|透天|公寓|屋齡型態|\n))/);
   if (ageM && Number.isFinite(Number(ageM[1]))) {
-    setField('age', Number(ageM[1]), 'recorded', `貼上文字屋齡：「${ageM[0].trim()}」`);
+    const ageYears = Number(ageM[1]) + Number(ageM[2] || 0) / 12;
+    setField('age', Math.round(ageYears * 100) / 100, 'recorded', `貼上文字屋齡：「${ageM[0].trim()}」`);
   }
 
-  const totalAreaM = text.match(/(?:權狀(?:總)?坪數|權狀坪|總坪數|建坪)[\s：:]*([\d.]+)\s*坪/);
+  const totalAreaM = text.match(/(?:權狀(?:總)?坪數|權狀坪|總坪數|建坪)[\s：:]*([\d.]+)\s*坪/) ||
+    text.match(/^[ \t]*坪[ \t]*數[\s：:]+([\d.]+)\s*坪/m);
   if (totalAreaM) {
     setField('totalArea', Number(totalAreaM[1]), 'recorded', `貼上文字總坪：「${totalAreaM[0].trim()}」`);
   }
 
-  const mainAreaM = text.match(/主建物[\s：:]*([\d.]+)\s*坪/);
+  const mainAreaM = text.match(/主建物(?:坪數)?[\s：:]*([\d.]+)\s*坪/);
   if (mainAreaM) {
     setField('mainArea', Number(mainAreaM[1]), 'recorded', `貼上文字主建物：「${mainAreaM[0].trim()}」`);
   }
 
-  const auxAreaM = text.match(/附屬建物[\s：:]*([\d.]+)\s*坪/);
+  const auxAreaM = text.match(/附屬建物(?:坪數)?[\s：:]*([\d.]+)\s*坪/);
   if (auxAreaM) {
     setField('auxArea', Number(auxAreaM[1]), 'recorded', `貼上文字附屬建物：「${auxAreaM[0].trim()}」`);
   }
@@ -1101,10 +1114,15 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     }
   }
 
-  const feeM = text.match(/管理費[\s：:]*([^\n]+)/);
+  const feeM = text.match(/管理費(?:\s*[\/／]\s*收取方式)?[\s：:]*([^\n]+)/);
   if (feeM && feeM[1] && !/^--$/.test(feeM[1].trim())) {
     const parsedFee = parseManagementFeeText(feeM[1]);
-    if (parsedFee.amount !== null) {
+    if (/^(?:無|免收|免管理費)(?:\s|$)/.test(feeM[1].trim())) {
+      setField('managementFee', 0, 'recorded', '貼上文字管理費：無');
+      parsedFields.managementFeeAmount = 0;
+      parsedFields.managementFeeRaw = '無';
+      fieldStatus.managementFeePeriod = 'not_applicable';
+    } else if (parsedFee.amount !== null) {
       parsedFields.managementFeeRaw = parsedFee.raw;
       parsedFields.managementFeeAmount = parsedFee.amount;
       parsedFields.managementFeePeriod = parsedFee.period;
@@ -1118,7 +1136,7 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     }
   }
 
-  const typeM = text.match(/(?:建物型態|型態|類型)[\s：:]*(電梯大樓|住宅大樓|華廈|透天別墅|公寓|別墅)/) ||
+  const typeM = text.match(/(?:物件型態|建物型態|型態|類型)[\s：:]*(電梯大樓|住宅大樓|華廈|透天別墅|公寓|別墅)/) ||
     text.match(/([\d.]+\s*年\s*(電梯大樓|住宅大樓|華廈|透天別墅|公寓|別墅)\s*(?:屋齡)?型態)/);
   if (typeM) {
     const mapped = mapPropertyTypeToken(typeM[2] || typeM[1]);
@@ -1127,8 +1145,12 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     }
   }
 
-  const parkLineM = text.match(/車位(?!坪數|管理)[\s：:]*([^\n]+)/);
-  if (parkLineM && parkLineM[1] && !/^無/.test(parkLineM[1].trim())) {
+  const parkLineM = text.match(/^[ \t]*車[ \t]*位(?!坪數|管理)[\s：:]+([^\n]+)/m) ||
+    text.match(/車位(?!坪數|管理)[\s：:]*([^\n]+)/);
+  if (parkLineM?.[1]?.trim() === '無車位') {
+    setField('hasParking', false, 'recorded', '貼上文字車位：無車位');
+    setField('parkingType', '無車位', 'recorded', '貼上文字車位：無車位');
+  } else if (parkLineM?.[1] && !/^無/.test(parkLineM[1].trim())) {
     const pText = parkLineM[1].trim();
     if (/坪|平面|機械|含售金|含在總價|私有|共有/.test(pText)) {
       setField('hasParking', true, 'recorded', `貼上文字車位：「${parkLineM[0].trim()}」`);
