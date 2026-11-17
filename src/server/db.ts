@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import { MongoClient, Db } from 'mongodb';
 
 declare global {
