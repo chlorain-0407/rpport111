@@ -10,7 +10,7 @@ import {
   Trash2,
   HelpCircle,
 } from 'lucide-react';
-import { PropertyData, FieldVerificationStatus, ManagementFeePeriod } from '../types/property';
+import { PropertyData, FieldVerificationStatus, ManagementFeePeriod, hasUnresolvedPrice } from '../types/property';
 import {
   calculateUnitPrice,
   calculatePublicRatio,
@@ -27,6 +27,7 @@ interface PropertyProofreadFormProps {
   property: PropertyData;
   onSaveProperty: (updated: PropertyData) => void;
   onProceedToReport: (property: PropertyData) => void;
+  reportBlocked: boolean;
 }
 
 function toSafeLayoutInput(layout: any): string {
@@ -37,6 +38,7 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
   property,
   onSaveProperty,
   onProceedToReport,
+  reportBlocked,
 }) => {
   const [formData, setFormData] = useState<PropertyData>(() => ({
     ...property,
@@ -172,6 +174,7 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
   const handleKeepUnresolved = (field: string) => {
     const updated = {
       ...formData,
+      askingPrice: field === 'askingPrice' ? null : formData.askingPrice,
       fieldStatus: {
         ...formData.fieldStatus,
         [field]: 'conflict' as FieldVerificationStatus,
@@ -195,7 +198,10 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
     handleChange('photos', updatedPhotos);
   };
 
-  const unitPriceResult = calculateUnitPrice(formData);
+  const priceUnresolved = hasUnresolvedPrice(formData);
+  const openPriceConflict = formData.conflicts?.some((conflict) => conflict.field === 'askingPrice' && !conflict.resolved);
+  const unresolvedConflicts = (formData.conflicts || []).filter((conflict) => !conflict.resolved);
+  const unitPriceResult = calculateUnitPrice(priceUnresolved ? { ...formData, askingPrice: null } : formData);
   const publicRatioResult = calculatePublicRatio(formData);
   const completeness = calculatePropertyCompleteness(formData);
 
@@ -296,11 +302,14 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center space-x-3 shrink-0">
+        <div className="flex flex-col items-start gap-2">
+          {priceUnresolved && (
+            <p role="status" className="text-xs font-semibold text-rose-700">開價來源有衝突，請先確認現行開價。</p>
+          )}
           <button
             type="button"
-            onClick={() => onProceedToReport(formData)}
-            className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold flex items-center space-x-2 shadow-xs transition-all"
+            disabled={reportBlocked || priceUnresolved}            onClick={() => onProceedToReport(formData)}
+            className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold flex items-center space-x-2 shadow-xs transition-all disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span>確認核對無誤，選擇報告用途</span>
             <span>&rarr;</span>
@@ -421,7 +430,8 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
                 <input
                   type="number"
                   step="1"
-                  value={formData.askingPrice ?? ''}
+                  value={priceUnresolved ? '' : formData.askingPrice ?? ''}
+                  readOnly={Boolean(openPriceConflict)}
                   onChange={(e) => handleNumberInput('askingPrice', e.target.value)}
                   placeholder="待確認（空白不計為 0）"
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-extrabold text-blue-700 focus:ring-2 focus:ring-blue-500"
@@ -913,7 +923,7 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-slate-600 leading-relaxed pt-1 border-t border-slate-200">
-                {unitPriceResult.explanation}
+                {priceUnresolved ? '開價待核對，確認後才會計算單價。' : unitPriceResult.explanation}
               </p>
             </div>
 
@@ -930,11 +940,11 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
 
             <div className="space-y-2 pt-2 border-t border-slate-100">
               <div className="text-xs font-bold text-slate-700">關鍵欄位審核狀態</div>
-              {formData.conflicts && formData.conflicts.length > 0 && (
+              {unresolvedConflicts.length > 0 && (
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2">
                   <div className="flex items-center space-x-1.5 text-xs font-bold text-rose-800">
                     <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                    <span>本案尚有 {formData.conflicts.filter((c) => !c.resolved).length} 項未釐清衝突</span>
+                    <span>本案尚有 {unresolvedConflicts.length} 項未釐清衝突</span>
                   </div>
                   <button
                     type="button"
@@ -949,8 +959,8 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
 
             <button
               type="button"
-              onClick={() => onProceedToReport(formData)}
-              className="w-full py-3 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-sm transition-all"
+              disabled={reportBlocked || priceUnresolved}              onClick={() => onProceedToReport(formData)}
+              className="w-full py-3 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-sm transition-all disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span>前往建立報告書（屋主／買方）</span>
               <span>&rarr;</span>
