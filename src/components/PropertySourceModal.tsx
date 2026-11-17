@@ -67,6 +67,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
   // Manual / Text / Screenshot state
   const [manualTitleOnly, setManualTitleOnly] = useState('');
   const [pastedText, setPastedText] = useState('');
+  const [manualSource, setManualSource] = useState<{ url: string; platform?: string; listingId?: string } | null>(null);
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
   const [isExtractingText, setIsExtractingText] = useState(false);
   const [textElapsedSec, setTextElapsedSec] = useState(0);
@@ -255,13 +256,36 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
       titleOverride?.trim() ||
       manualTitleOnly.trim() ||
       (sourceUrl ? `待補公開網址物件 (${new Date().toLocaleDateString('zh-TW')})` : '新成屋草稿 (待補規格)');
-    const draft = buildEmptyDraft(fallbackTitle, sourceUrl ? { sourceUrl, sourceType: 'url' } : undefined);
+    const source = sourceUrl
+      ? { sourceUrl, sourceType: 'url' as const }
+      : activeSourceTab === 'manual' && manualSource
+        ? {
+            sourceUrl: manualSource.url,
+            sourcePlatform: manualSource.platform,
+            sourceListingId: manualSource.listingId,
+            sourceId: manualSource.listingId || manualSource.url,
+          }
+        : undefined;
+    const draft = buildEmptyDraft(fallbackTitle, source);
     void applyImport(draft, 'create');
+  };
+
+  const handleUrlInputChange = (nextUrl: string) => {
+    const changed = nextUrl.trim() !== urlInput.trim();
+    setUrlInput(nextUrl);
+    if (!changed) return;
+
+    urlReqTokenRef.current += 1;
+    urlAbortRef.current?.abort();
+    setIsExtractingUrl(false);
+    setUrlExtractionResult(null);
+    setUrlError(null);
   };
 
   // URL extraction (with optional cachedText reuse on AI timeout retry)
   const handleExtractUrlFor = async (targetUrl: string, cachedText?: string) => {
-    if (!targetUrl.trim()) return;
+    targetUrl = targetUrl.trim();
+    if (!targetUrl) return;
     urlAbortRef.current?.abort();
     const controller = new AbortController();
     urlAbortRef.current = controller;
@@ -287,11 +311,11 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
       if (token !== urlReqTokenRef.current) return;
 
       if (!res.ok) {
-        setUrlExtractionResult(result?.webFetchStatus ? result : null);
+        setUrlExtractionResult(result?.webFetchStatus ? { ...result, inputUrl: targetUrl } : null);
         setUrlError(result?.error || '網址分析失敗，請重試或改用空白表單。');
         return;
       }
-      setUrlExtractionResult(result);
+      setUrlExtractionResult({ ...result, inputUrl: targetUrl });
     } catch (err: any) {
       if (token !== urlReqTokenRef.current) return;
       if (err?.name === 'AbortError') {
@@ -394,7 +418,10 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
         },
         conflicts: result.conflicts || [],
         sourceType: screenshotBase64 ? 'screenshot' : 'manual',
-        sourceId: `SRC-${Date.now()}`,
+        sourceId: manualSource?.listingId || manualSource?.url || `SRC-${Date.now()}`,
+        sourceUrl: manualSource?.url,
+        sourcePlatform: manualSource?.platform,
+        sourceListingId: manualSource?.listingId,
         updatedAt: new Date().toISOString(),
       };
 
@@ -424,13 +451,19 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
   const handleCreateDraftTitleOnly = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualTitleOnly.trim()) return;
-    const newDraft = buildEmptyDraft(manualTitleOnly.trim());
+    const newDraft = buildEmptyDraft(manualTitleOnly.trim(), manualSource ? {
+      sourceUrl: manualSource.url,
+      sourcePlatform: manualSource.platform,
+      sourceListingId: manualSource.listingId,
+      sourceId: manualSource.listingId || manualSource.url,
+    } : undefined);
     checkDuplicate(newDraft);
   };
 
   // Convert url extraction result to property without fabricating missing defaults
   const handleApplyUrlResult = () => {
-    if (!urlExtractionResult?.data) return;
+    if (!urlExtractionResult?.data || urlExtractionResult.inputUrl !== urlInput.trim()) return;
+    const sourceUrl = urlExtractionResult.inputUrl;
     const d = urlExtractionResult.data;
     const imported: PropertyData = {
       ...d,
@@ -486,14 +519,14 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
       },
       evidenceSummaries: {
         ...(d.evidenceSummaries || {}),
-        caseName: d.evidenceSummaries?.caseName || `公開網頁網址：${urlInput}`,
+        caseName: d.evidenceSummaries?.caseName || `公開網頁網址：${sourceUrl}`,
       },
       conflicts: Array.isArray(d.conflicts) ? d.conflicts : [],
       sourceType: 'url',
       sourcePlatform: urlExtractionResult.sourcePlatform || d.sourcePlatform || '',
       sourceListingId: urlExtractionResult.sourceListingId || d.sourceListingId || '',
-      sourceId: urlExtractionResult.sourceListingId || urlInput,
-      sourceUrl: urlInput,
+      sourceId: urlExtractionResult.sourceListingId || sourceUrl,
+      sourceUrl,
       fetchedAt: d.fetchedAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -501,7 +534,24 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
     checkDuplicate(imported);
   };
 
+  const handleUseRenderedPage = () => {
+    if (urlExtractionResult?.inputUrl !== urlInput.trim()) return;
+    const { inputUrl, sourcePlatform, sourceListingId } = urlExtractionResult;
+    if (manualSource?.url !== inputUrl) {
+      textReqTokenRef.current += 1;
+      textAbortRef.current?.abort();
+      setIsExtractingText(false);
+      setExtractError(null);
+      setPastedText('');
+      setScreenshotBase64(null);
+      setManualTitleOnly('');
+    }
+    setManualSource({ url: inputUrl, platform: sourcePlatform, listingId: sourceListingId });
+    setActiveSourceTab('manual');
+  };
+
   const handleOpenRawTextInManualTab = () => {
+    setManualSource(null);
     const txt = urlExtractionResult?.rawFetchedText || '';
     if (txt) {
       setPastedText(txt);
@@ -548,7 +598,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
     }
   };
 
-  const renderAiStatusLabel = (status?: string) => {
+  const renderAiStatusLabel = (status?: string, hasData = false) => {
     switch (status) {
       case 'ok':
         return <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">AI 補齊正常</span>;
@@ -559,7 +609,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
       case 'timeout':
         return <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">AI 補齊逾時 (已保留規則欄位)</span>;
       case 'skipped':
-        return <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">已透過規則解析 / 未呼叫 AI</span>;
+        return <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">{hasData ? '已透過規則解析，未呼叫 AI' : '未呼叫 AI'}</span>;
       default:
         return <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">AI 服務異常</span>;
     }
@@ -743,7 +793,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                     <input
                       type="url"
                       value={urlInput}
-                      onChange={(e) => setUrlInput(e.target.value)}
+                      onChange={(e) => handleUrlInputChange(e.target.value)}
                       placeholder="輸入各大房仲公開物件網址（如 591、信義、永慶、住商）..."
                       className="flex-1 px-3 py-2 border border-slate-300 rounded-xl font-mono text-xs focus:ring-2 focus:ring-blue-500"
                     />
@@ -871,7 +921,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                         <div className="flex flex-wrap items-center gap-2 text-[11px]">
                           <span>1. 網頁讀取：{renderWebStatusLabel(urlExtractionResult.webFetchStatus)}</span>
                           <span>2. 頁型辨識：{renderTargetMatchLabel(urlExtractionResult.pageType)}</span>
-                          <span>3. 模型補齊：{renderAiStatusLabel(urlExtractionResult.aiServiceStatus)}</span>
+                          <span>3. 模型補齊：{renderAiStatusLabel(urlExtractionResult.aiServiceStatus, Boolean(urlExtractionResult.data))}</span>
                         </div>
                         <span className="text-slate-800 font-extrabold text-xs">
                           已取得 {comp.coreAvailable}／{comp.coreTotal} 項核心欄位（總可用 {comp.totalAvailable}／{comp.totalApplicable}）
@@ -983,7 +1033,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                             {aiFailed && urlExtractionResult.rawFetchedText && (
                               <button
                                 type="button"
-                                onClick={() => handleExtractUrlFor(urlInput, urlExtractionResult.rawFetchedText)}
+                                onClick={() => handleExtractUrlFor(urlExtractionResult.inputUrl, urlExtractionResult.rawFetchedText)}
                                 disabled={isExtractingUrl}
                                 className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1"
                               >
@@ -993,6 +1043,17 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                             )}
                           </div>
                         </>
+                      ) : urlExtractionResult.pageType === 'template_only' ? (
+                        <div className="flex flex-wrap gap-2">
+                          <a href={urlExtractionResult.inputUrl} target="_blank" rel="noopener noreferrer"
+                            className="px-3.5 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold">
+                            開啟原始物件頁
+                          </a>
+                          <button type="button" onClick={handleUseRenderedPage}
+                            className="px-3.5 py-1.5 bg-blue-700 text-white rounded-lg text-xs font-semibold">
+                            保留網址，改貼原頁文字或截圖
+                          </button>
+                        </div>
                       ) : (
                         <div className="flex flex-wrap gap-2">
                           {urlExtractionResult.rawFetchedText && (
@@ -1058,6 +1119,15 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                     </button>
                   </form>
                 </div>
+
+                {manualSource && (
+                  <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">
+                    <p>已保留來源網址{manualSource.listingId ? `（物件 ${manualSource.listingId}）` : ''}。請貼上同一物件的摘要及詳細規格。</p>
+                    <button type="button" disabled={isExtractingText} onClick={() => setManualSource(null)} className="mt-1 underline">
+                      取消連結此網址
+                    </button>
+                  </div>
+                )}
 
                 {/* Method 2: Paste listing text or upload screenshot */}
                 <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
