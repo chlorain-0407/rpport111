@@ -1,9 +1,53 @@
+import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import puppeteer from 'puppeteer-core';
 
 const ORIGIN = 'https://www.pacific.com.tw';
 const DETAIL_PATH = '/Object/ObjectDetail/';
 const RENDER_TIMEOUT_MS = 12_000;
 let activeRender = false;
+
+const runExecutable = promisify(execFile);
+const SYSTEM_CHROMIUM = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
+
+async function findBrowser(env: Record<string, string>, signal: AbortSignal) {
+  const configured = process.env.PACIFIC_CHROMIUM_PATH?.trim();
+  const systemPaths = configured ? [configured] : process.platform === 'linux' ? SYSTEM_CHROMIUM : [];
+  let lastError: unknown;
+
+  const check = async (path: string) => {
+    signal.throwIfAborted();
+    // An existing file can still fail with ENOENT if its OS loader is missing.
+    await access(path, constants.X_OK);
+    if (process.platform === 'linux') {
+      await runExecutable(path, ['--version'], { env, signal, timeout: 4_000, windowsHide: true });
+    }
+  };
+
+  for (const path of systemPaths) {
+    try {
+      await check(path);
+      return { path, headless: true as const };
+    } catch (error) {
+      signal.throwIfAborted();
+      lastError = error;
+    }
+  }
+  if (configured) throw lastError;
+  if (process.platform !== 'linux') {
+    throw new Error('Set PACIFIC_CHROMIUM_PATH to an installed Chrome executable.');
+  }
+
+  const path = await (await import('@sparticuz/chromium')).default.executablePath();
+  for (const name of ['LD_LIBRARY_PATH', 'FONTCONFIG_PATH']) {
+    const value = process.env[name];
+    if (value) env[name] = value;
+  }
+  await check(path);
+  return { path, headless: 'shell' as const };
+}
 
 export async function readPacificListing(listingId: string, signal: AbortSignal) {
   if (!/^[A-Z]{0,3}\d{5,}$/.test(listingId) || activeRender || signal.aborted) return null;
@@ -14,9 +58,6 @@ export async function readPacificListing(listingId: string, signal: AbortSignal)
   const closeBrowser = () => { void browser?.close().catch(() => {}); };
   signal.addEventListener('abort', closeBrowser, { once: true });
   try {
-    const executablePath = process.env.PACIFIC_CHROMIUM_PATH ||
-      await (await import('@sparticuz/chromium')).default.executablePath();
-    signal.throwIfAborted();
     // Chromium receives runtime paths only, with its normal security settings.
     const env: Record<string, string> = {};
     for (const name of ['PATH', 'HOME', 'TEMP', 'TMP', 'TMPDIR', 'SystemRoot', 'WINDIR',
@@ -24,13 +65,19 @@ export async function readPacificListing(listingId: string, signal: AbortSignal)
       const value = process.env[name];
       if (value) env[name] = value;
     }
+    const executable = await findBrowser(env, signal);
     browser = await puppeteer.launch({
-      executablePath,
-      headless: process.env.PACIFIC_CHROMIUM_PATH ? true : 'shell',
-      pipe: true,
+      executablePath: executable.path,
+      headless: executable.headless,
+      // In this Puppeteer version the socket launcher handles child-process
+      // spawn errors. Restrict the ephemeral debugging socket to loopback.
+      pipe: process.platform !== 'linux',
+      ...(process.platform === 'linux' ? { debuggingPort: 0 } : {}),
       env,
       timeout: 8_000,
-      args: ['--disable-dev-shm-usage'],
+      args: process.platform === 'linux'
+        ? ['--disable-dev-shm-usage', '--remote-debugging-address=127.0.0.1']
+        : ['--disable-dev-shm-usage'],
     });
     signal.throwIfAborted();
 
