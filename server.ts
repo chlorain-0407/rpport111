@@ -44,7 +44,7 @@ const __dirname = path.dirname(__filename);
 
 const isRunningBundled = path.basename(__filename) === 'server.js';
 const isProd = process.env.NODE_ENV === 'production' || isRunningBundled;
-const port = isProd ? Number(process.env.PORT) || 8080 : 3000;
+const port = Number(process.env.PORT) || (isProd ? 8080 : 3000);
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
