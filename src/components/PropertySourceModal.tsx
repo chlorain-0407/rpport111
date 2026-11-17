@@ -14,8 +14,7 @@ import {
   RotateCcw,
   FilePlus,
 } from 'lucide-react';
-import { PropertyData } from '../types/property';
-import { DEMO_PROPERTIES } from '../utils/mockData';
+import { PropertyData, hasUnresolvedPrice } from '../types/property';
 import {
   formatLayout,
   normalizeLayoutInput,
@@ -27,7 +26,7 @@ import {
   calculatePropertyCompleteness,
 } from '../utils/calculator';
 
-export type ImportMergeAction = 'create' | 'reuse' | 'merge_unverified';
+export type ImportMergeAction = 'create' | 'copy' | 'reuse' | 'merge_unverified';
 
 interface PropertySourceModalProps {
   isOpen: boolean;
@@ -36,7 +35,7 @@ interface PropertySourceModalProps {
     property: PropertyData,
     action: ImportMergeAction,
     matchedExistingId?: string
-  ) => void;
+  ) => Promise<void>;
   existingProperties: PropertyData[];
   dbConfigured: boolean;
 }
@@ -52,6 +51,9 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
 
   // DB search state
   const [dbSearchQuery, setDbSearchQuery] = useState('');
+  const [importError, setImportError] = useState<string | null>(null);
+  const [isApplyingImport, setIsApplyingImport] = useState(false);
+  const applyingImportRef = useRef(false);
 
   // URL state
   const [urlInput, setUrlInput] = useState('');
@@ -112,6 +114,23 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const applyImport = async (property: PropertyData, action: ImportMergeAction, existingId?: string) => {
+    if (applyingImportRef.current) return;
+    applyingImportRef.current = true;
+    setIsApplyingImport(true);
+    setImportError(null);
+    try {
+      await onImportProperty(property, action, existingId);
+      setDuplicateMatchInfo(null);
+      onClose();
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '匯入失敗，請再試一次。');
+    } finally {
+      applyingImportRef.current = false;
+      setIsApplyingImport(false);
+    }
+  };
 
   const buildFieldDiffs = (existing: PropertyData, incoming: PropertyData) => {
     const specs: Array<{ key: keyof PropertyData; label: string; fmt?: (v: any, p: PropertyData) => string }> = [
@@ -186,8 +205,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
         diffs: buildFieldDiffs(matched, prop),
       });
     } else {
-      onImportProperty(prop, 'create');
-      onClose();
+      void applyImport(prop, 'create');
     }
   };
 
@@ -238,8 +256,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
       manualTitleOnly.trim() ||
       (sourceUrl ? `待補公開網址物件 (${new Date().toLocaleDateString('zh-TW')})` : '新成屋草稿 (待補規格)');
     const draft = buildEmptyDraft(fallbackTitle, sourceUrl ? { sourceUrl, sourceType: 'url' } : undefined);
-    onImportProperty(draft, 'create');
-    onClose();
+    void applyImport(draft, 'create');
   };
 
   // URL extraction (with optional cachedText reuse on AI timeout retry)
@@ -492,7 +509,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
     setActiveSourceTab('manual');
   };
 
-  const filteredDbProperties = DEMO_PROPERTIES.filter(
+  const filteredDbProperties = existingProperties.filter(
     (p) =>
       p.caseName.toLowerCase().includes(dbSearchQuery.toLowerCase()) ||
       p.caseId.toLowerCase().includes(dbSearchQuery.toLowerCase()) ||
@@ -565,6 +582,8 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
             <button
               type="button"
               onClick={onClose}
+              disabled={isApplyingImport}
+              aria-label="關閉匯入視窗"
               className="text-slate-400 hover:text-white text-xl leading-none"
             >
               &times;
@@ -583,7 +602,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
               }`}
             >
               <Database className="w-4 h-4" />
-              <span>入口一：示範資料庫選取</span>
+              <span>入口一：選取物件庫</span>
             </button>
             <button
               type="button"
@@ -613,6 +632,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
 
           {/* Tab Content */}
           <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            {importError && !duplicateMatchInfo && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-800">{importError}</p>}
             {/* TAB 1: FROM DATABASE */}
             {activeSourceTab === 'db' && (
               <div className="space-y-4">
@@ -622,7 +642,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                     <div className="flex-1">
                       <div className="font-bold text-sm">正式資料庫尚未連線</div>
                       <p className="mt-0.5 text-amber-800">
-                        系統提供成屋示範案件供測試流程，載入後將標示為示範資料。
+                        可開啟示範物件，或先完成新物件校對，待資料庫恢復後再儲存。
                       </p>
                     </div>
                   </div>
@@ -641,17 +661,22 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
 
                 <div className="space-y-2.5">
                   <div className="text-xs font-bold text-slate-600 flex justify-between items-center">
-                    <span>可選取示範物件 ({filteredDbProperties.length})</span>
+                    <span>可選取物件 ({filteredDbProperties.length})</span>
                     <button
                       type="button"
                       onClick={() => handleOpenBlankProofread()}
                       className="text-blue-700 hover:underline font-semibold flex items-center space-x-1"
                     >
                       <FilePlus className="w-3.5 h-3.5" />
-                      <span>略過範例，直接建立空白校對表單</span>
+                      <span>開啟空白校對表單</span>
                     </button>
                   </div>
 
+                  {filteredDbProperties.length === 0 && (
+                    <p className="py-3 text-xs text-slate-600">
+                      {dbSearchQuery.trim() ? '找不到符合搜尋條件的物件。' : '物件庫目前沒有資料，可先開啟空白校對表單。'}
+                    </p>
+                  )}
                   {filteredDbProperties.map((prop) => (
                     <div
                       key={prop.id}
@@ -663,10 +688,12 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                             {prop.caseId}
                           </span>
                           <span className="font-bold text-slate-900 text-sm">{prop.caseName}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded font-bold">
-                            示範資料
-                          </span>
-                          {prop.conflicts && prop.conflicts.length > 0 && (
+                          {prop.isDemo && (
+                            <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded font-bold">
+                              示範資料
+                            </span>
+                          )}
+                          {hasUnresolvedPrice(prop) && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded font-bold">
                               有價格衝突待確認
                             </span>
@@ -675,7 +702,7 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
                         <div className="text-xs text-slate-500 flex items-center space-x-3">
                           <span>{prop.cityDistrict || '待確認'}</span>
                           <span>•</span>
-                          <span>開價 <strong className="text-blue-700">{formatWan(prop.askingPrice)}</strong></span>
+                          <span>開價 <strong className="text-blue-700">{hasUnresolvedPrice(prop) ? '待核對' : formatWan(prop.askingPrice)}</strong></span>
                           <span>•</span>
                           <span>權狀 {formatPing(prop.totalArea)}</span>
                           <span>•</span>
@@ -685,10 +712,11 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => checkDuplicate(prop)}
+                        onClick={() => void applyImport(prop, 'reuse', prop.id)}
+                        disabled={isApplyingImport}
                         className="px-3.5 py-1.5 bg-blue-700 group-hover:bg-blue-800 text-white rounded-lg text-xs font-semibold flex items-center space-x-1 shrink-0 shadow-xs"
                       >
-                        <span>匯入校對</span>
+                        <span>開啟校對</span>
                         <ArrowRight className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -1238,47 +1266,43 @@ export const PropertySourceModal: React.FC<PropertySourceModalProps> = ({
               </p>
             )}
 
+            {duplicateMatchInfo.matchReason === 'name_only' && (
+              <p className="text-xs text-slate-600">只有案名相同，請保留既有紀錄或另存新物件。</p>
+            )}
+            {!dbConfigured && <p className="text-xs text-slate-600">資料庫尚未連線，暫時無法合併既有紀錄。</p>}
+            {importError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-800">{importError}</p>}
             <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-slate-100">
               <button
                 type="button"
-                onClick={() => {
-                  onImportProperty(duplicateMatchInfo.incoming, 'create');
-                  setDuplicateMatchInfo(null);
-                  onClose();
-                }}
+                disabled={isApplyingImport}
+                onClick={() => { setDuplicateMatchInfo(null); setImportError(null); }}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700"
+              >
+                返回修改
+              </button>
+              <button
+                type="button"
+                disabled={isApplyingImport}
+                onClick={() => void applyImport(duplicateMatchInfo.incoming, 'copy')}
                 className="px-3.5 py-2 border border-slate-300 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-50"
               >
                 另存為新物件
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  onImportProperty(
-                    duplicateMatchInfo.incoming,
-                    'reuse',
-                    duplicateMatchInfo.existing.id
-                  );
-                  setDuplicateMatchInfo(null);
-                  onClose();
-                }}
+                disabled={isApplyingImport}
+                onClick={() => void applyImport(duplicateMatchInfo.incoming, 'reuse', duplicateMatchInfo.existing.id)}
                 className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold"
               >
                 保留既有紀錄不更新
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  onImportProperty(
-                    duplicateMatchInfo.incoming,
-                    'merge_unverified',
-                    duplicateMatchInfo.existing.id
-                  );
-                  setDuplicateMatchInfo(null);
-                  onClose();
-                }}
+                disabled={isApplyingImport || !dbConfigured || duplicateMatchInfo.matchReason === 'name_only'}
+                onClick={() => void applyImport(duplicateMatchInfo.incoming, 'merge_unverified', duplicateMatchInfo.existing.id)}
                 className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-xs font-bold shadow-xs"
               >
-                只更新空白／未核對欄位（保護已核對）
+                {isApplyingImport ? '處理中…' : '只更新空白／未核對欄位'}
               </button>
             </div>
           </div>

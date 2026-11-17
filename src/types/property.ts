@@ -80,6 +80,11 @@ export interface PropertyData {
   updatedAt: string;
 }
 
+export function hasUnresolvedPrice(property: Pick<PropertyData, 'fieldStatus' | 'conflicts'>): boolean {
+  return property.fieldStatus?.askingPrice === 'conflict' ||
+    Boolean(property.conflicts?.some((conflict) => conflict.field === 'askingPrice' && !conflict.resolved));
+}
+
 export interface ComparableSale {
   id: string;
   propertyId?: string;
