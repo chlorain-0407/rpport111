@@ -374,7 +374,7 @@ export interface CoreCompletenessChecklist {
  * 依固定核心與進階欄位檢核清單計算「已取得 X／Y 個可用欄位」，不以單次 AI 回傳充數為 100%。
  * 僅得「3房」而無廳衛數時，格局標記為 pending（待補廳衛），不計入已完成。
  */
-export function calculatePropertyCompleteness(property: Partial<PropertyData> | null | undefined): CoreCompletenessChecklist {
+export function resolvePropertyFieldStatus(property: Partial<PropertyData> | null | undefined, key: string): string {
   const p: any = property || {};
   const fs: Record<string, string> = p.fieldStatus && typeof p.fieldStatus === 'object' ? p.fieldStatus : {};
 
@@ -394,7 +394,8 @@ export function calculatePropertyCompleteness(property: Partial<PropertyData> | 
     }
     if (key === 'managementFeePeriod') {
       if (p.managementFeeAmount === 0) return true;
-      return Boolean(p.managementFeePeriod && p.managementFeePeriod !== 'unknown');
+      return Number.isFinite(p.managementFeeAmount ?? p.managementFee) &&
+        Boolean(p.managementFeePeriod && p.managementFeePeriod !== 'unknown');
     }
     if (typeof val === 'boolean') return true;
     if (typeof val === 'number') return Number.isFinite(val);
@@ -406,7 +407,7 @@ export function calculatePropertyCompleteness(property: Partial<PropertyData> | 
     if (key === 'layout' && isPartialLayout(p.layout)) {
       return 'pending';
     }
-    if (fs[key]) return fs[key];
+    if (fs[key] === 'conflict') return 'conflict';
     if (key === 'parkingIncluded' && (p.hasParking === false || p.parkingType === '無車位')) {
       return 'not_applicable';
     }
@@ -416,8 +417,15 @@ export function calculatePropertyCompleteness(property: Partial<PropertyData> | 
     ) {
       return 'not_applicable';
     }
-    return isPresent(key) ? 'recorded' : 'pending';
+    if (!isPresent(key)) return 'pending';
+    return fs[key] || 'recorded';
   };
+  return resolveStatus(key);
+}
+
+export function calculatePropertyCompleteness(property: Partial<PropertyData> | null | undefined): CoreCompletenessChecklist {
+  const p = property || {};
+  const resolveStatus = (key: string) => resolvePropertyFieldStatus(p, key);
 
   const coreSpec: Array<{ key: string; label: string }> = [
     { key: 'caseName', label: '案名' },
@@ -495,4 +503,5 @@ export function calculatePropertyCompleteness(property: Partial<PropertyData> | 
     summaryText: `核心欄位已取得 ${coreAvailable}／${coreTotal} 項（總可用欄位 ${totalAvailable}／${totalApplicable} 項）`,
   };
 }
+
 

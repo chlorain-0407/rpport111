@@ -34,7 +34,7 @@ import { ReportCreatorModal } from './components/ReportCreatorModal';
 import { ReportEditor } from './components/ReportEditor';
 import { ClientReportA4 } from './components/ClientReportA4';
 import { DatabaseSettingsModal } from './components/DatabaseSettingsModal';
-import { formatLayout, normalizeLayoutInput, formatWan, formatPing } from './utils/calculator';
+import { calculatePropertyCompleteness, formatLayout, normalizeLayoutInput, formatWan, formatPing } from './utils/calculator';
 
 export default function App() {
   // Navigation active tab
@@ -530,7 +530,7 @@ export default function App() {
 
             {/* Mode Banner & Fast Property Switcher */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {properties.slice(0, 3).map((p, idx) => (
+              {properties.slice(0, 3).map((p) => (
                 <div
                   key={p.id}
                   onClick={() => {
@@ -541,7 +541,8 @@ export default function App() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
-                      {idx === 0 ? '標準示範標的' : idx === 1 ? '價格衝突案例' : '待補案例'}
+                      {hasUnresolvedPrice(p) ? '價格待核對' : p.isDemo ? '示範物件' :
+                        calculatePropertyCompleteness(p).statusCounts.pending > 0 ? '資料待補' : '已建檔物件'}
                     </span>
                     <span className="text-xs font-mono text-slate-400">{p.caseId}</span>
                   </div>
@@ -896,3 +897,4 @@ export default function App() {
     </div>
   );
 }
+

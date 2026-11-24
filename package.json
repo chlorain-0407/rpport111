@@ -10,7 +10,8 @@
     "preview": "node dist/server.js",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:academy": "tsx --test tests/academy-*.test.ts"
+    "test:academy": "tsx --test tests/academy-*.test.ts",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@agentgo-tw/app-sdk": "^2.7.0",
@@ -42,3 +43,4 @@
     "node": ">=20"
   }
 }
+
