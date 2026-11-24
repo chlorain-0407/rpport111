@@ -1,3 +1,5 @@
+import type { Request } from 'express';
+import { memberDatabase, initializeMemberIndexes, deleteMemberRecords } from './memberData';
 import { MongoClient, Db } from 'mongodb';
 
 declare global {
@@ -25,9 +27,10 @@ export function getClient(): MongoClient {
 /**
  * 取得 e8346c_report 資料庫實例
  */
-export async function getDb(): Promise<Db> {
+export async function getDb(req?: Request): Promise<Db> {
   const client = getClient();
-  return client.db('e8346c_report');
+  const db = client.db('e8346c_report');
+  return req ? memberDatabase(db, req) : db;
 }
 
 /**
@@ -39,6 +42,8 @@ export async function initDbIndexes(): Promise<void> {
 
   try {
     const db = await getDb();
+
+    await initializeMemberIndexes(db);
 
     // 1. properties 集合索引
     const propertiesCol = db.collection('properties');
@@ -87,4 +92,9 @@ export async function initDbIndexes(): Promise<void> {
   } catch (err: any) {
     console.error('[MongoDB] 建立集合索引時發生非致命錯誤:', err.message);
   }
+}
+
+/** Trusted server-side erasure entry point. Never accepts a caller-supplied owner on a public route. */
+export async function deleteUserData(userUuid: string): Promise<void> {
+  await deleteMemberRecords(await getDb(), userUuid);
 }
