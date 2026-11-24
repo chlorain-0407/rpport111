@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import { createAcademy } from '@agentgo-tw/app-sdk';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -57,7 +58,21 @@ if (!/^\d+$/.test(configuredPort) || port < 1 || port > 65535) {
   throw new Error('PORT or --port must be an integer between 1 and 65535.');
 }
 
+const academy = createAcademy();
 const app = express();
+app.use(academy.express());
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.academyService) {
+    res.status(403).json({ code: 'ACCESS_DENIED', error: '本 App 尚未登記外部服務資料介面。' });
+    return;
+  }
+  next();
+});
+app.get('/api/me', (req, res) => {
+  const ctx = req.academy;
+  res.json(ctx ? { user: ctx.user, entitlement: ctx.entitlement, env: ctx.env } : null);
+});
 app.use(express.json({ limit: '25mb' }));
 
 // Primary & compatible fallback model per @google/genai skill guidelines
@@ -597,7 +612,7 @@ async function callGeminiWithResilience(options: {
 // -----------------------------------------------------------------------------
 // MongoDB Health & Connection Status
 // -----------------------------------------------------------------------------
-app.get('/api/database/status', async (_req: Request, res: Response) => {
+app.get('/api/database/status', async (req: Request, res: Response) => {
   const hasUri = !!process.env.MONGODB_URI;
   if (!hasUri) {
     res.json({
@@ -611,7 +626,7 @@ app.get('/api/database/status', async (_req: Request, res: Response) => {
 
   try {
     const start = Date.now();
-    const db = await getDb();
+    const db = await getDb(req);
     await db.command({ ping: 1 });
     const latencyMs = Date.now() - start;
 
@@ -646,7 +661,7 @@ app.get('/api/database/status', async (_req: Request, res: Response) => {
 app.post('/api/database/seed', async (req: Request, res: Response) => {
   const { force } = req.body || {};
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const propCount = await db.collection('properties').countDocuments();
 
     if (propCount > 0 && !force) {
@@ -699,13 +714,13 @@ app.post('/api/database/seed', async (req: Request, res: Response) => {
 // -----------------------------------------------------------------------------
 // Properties CRUD (Stored exclusively in MongoDB)
 // -----------------------------------------------------------------------------
-app.get('/api/properties', async (_req: Request, res: Response) => {
+app.get('/api/properties', async (req: Request, res: Response) => {
   if (!process.env.MONGODB_URI) {
     res.json(DEMO_PROPERTIES);
     return;
   }
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const properties = await db
       .collection('properties')
       .find({})
@@ -727,7 +742,7 @@ app.get('/api/properties', async (_req: Request, res: Response) => {
 app.get('/api/properties/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const property = await db.collection('properties').findOne({ id });
     if (!property) {
       res.status(404).json({ error: '找不到指定物件' });
@@ -749,7 +764,7 @@ app.post('/api/properties', async (req: Request, res: Response) => {
   }
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const now = new Date();
     const propId = propertyData.id || `prop-${Date.now()}`;
     const newDoc = normalizeProperty({
@@ -776,7 +791,7 @@ app.put('/api/properties/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   const updates = req.body;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const now = new Date();
     const normalizedUpdates = normalizeProperty({
       ...updates,
@@ -804,7 +819,7 @@ app.put('/api/properties/:id', async (req: Request, res: Response) => {
 app.delete('/api/properties/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     await Promise.all([
       db.collection('properties').deleteOne({ id }),
       db.collection('reports').deleteMany({ propertyId: id }),
@@ -834,7 +849,7 @@ app.get('/api/properties/:id/progress', async (req: Request, res: Response) => {
   }
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const prop = await db.collection('properties').findOne({ id: propertyId });
     if (!prop) {
       res.status(404).json({ error: '找不到指定物件，無法讀取銷售進度' });
@@ -910,7 +925,7 @@ app.put('/api/properties/:id/progress', async (req: Request, res: Response) => {
   }
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const prop = await db.collection('properties').findOne({ id: propertyId });
     if (!prop) {
       res.status(404).json({ error: '找不到指定物件，無法儲存銷售進度' });
@@ -965,7 +980,7 @@ app.put('/api/properties/:id/progress', async (req: Request, res: Response) => {
 app.get('/api/properties/:id/buyers', async (req: Request, res: Response) => {
   const { id: propertyId } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const buyers = await db
       .collection('buyer_profiles')
       .find({ propertyId })
@@ -991,7 +1006,7 @@ app.put('/api/properties/:id/buyers/:buyerId', async (req: Request, res: Respons
   }
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const prop = await db.collection('properties').findOne({ id: propertyId });
     if (!prop) {
       res.status(404).json({ error: '找不到指定物件' });
@@ -1038,7 +1053,7 @@ app.put('/api/properties/:id/buyers/:buyerId', async (req: Request, res: Respons
 app.delete('/api/properties/:id/buyers/:buyerId', async (req: Request, res: Response) => {
   const { id: propertyId, buyerId } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     await db.collection('buyer_profiles').deleteOne({ propertyId, buyerId });
     res.json({ success: true });
   } catch (err: any) {
@@ -1052,7 +1067,7 @@ app.delete('/api/properties/:id/buyers/:buyerId', async (req: Request, res: Resp
 app.get('/api/properties/:id/market-data', async (req: Request, res: Response) => {
   const { id: propertyId } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const [comparables, competingListings] = await Promise.all([
       db.collection('comparables').find({ propertyId }).sort({ createdAt: -1 }).toArray(),
       db.collection('competing_listings').find({ propertyId }).sort({ createdAt: -1 }).toArray(),
@@ -1072,7 +1087,7 @@ app.put('/api/properties/:id/comparables', async (req: Request, res: Response) =
   const { id: propertyId } = req.params;
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     await db.collection('comparables').deleteMany({ propertyId });
     if (items.length > 0) {
       const now = new Date();
@@ -1096,7 +1111,7 @@ app.put('/api/properties/:id/competing-listings', async (req: Request, res: Resp
   const { id: propertyId } = req.params;
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     await db.collection('competing_listings').deleteMany({ propertyId });
     if (items.length > 0) {
       const now = new Date();
@@ -1130,7 +1145,7 @@ app.get('/api/reports', async (req: Request, res: Response) => {
   if (reportType) query.reportType = reportType;
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const reports = await db
       .collection('reports')
       .find(query)
@@ -1152,7 +1167,7 @@ app.get('/api/reports', async (req: Request, res: Response) => {
 app.get('/api/reports/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const report = await db.collection('reports').findOne({ id });
     if (!report) {
       res.status(404).json({ error: '找不到指定報告' });
@@ -1170,7 +1185,7 @@ app.get('/api/reports/:id', async (req: Request, res: Response) => {
 app.get('/api/reports/:id/export', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const report = await db.collection('reports').findOne({ id });
     if (!report) {
       res.status(404).json({ error: '找不到指定報告書，請先儲存後再匯出' });
@@ -1207,7 +1222,7 @@ app.post('/api/reports', async (req: Request, res: Response) => {
   }
 
   try {
-    const db = await getDb();
+    const db = await getDb(req);
 
     // Idempotency check if requestId is provided
     if (reportDoc.requestId) {
@@ -1248,7 +1263,7 @@ app.put('/api/reports/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   const updates = req.body;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const now = new Date();
     const { _id, ...safeUpdates } = updates || {};
     const updatePayload: Record<string, any> = {
@@ -1291,7 +1306,7 @@ app.put('/api/reports/:id', async (req: Request, res: Response) => {
 app.delete('/api/reports/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     await db.collection('reports').deleteOne({ id });
     res.json({ success: true, message: '報告書已自資料庫刪除' });
   } catch (err: any) {
@@ -1303,13 +1318,13 @@ app.delete('/api/reports/:id', async (req: Request, res: Response) => {
 // -----------------------------------------------------------------------------
 // Broker Profile Settings (Stored in MongoDB)
 // -----------------------------------------------------------------------------
-app.get('/api/profile', async (_req: Request, res: Response) => {
+app.get('/api/profile', async (req: Request, res: Response) => {
   if (!process.env.MONGODB_URI) {
     res.json(DEFAULT_BROKER);
     return;
   }
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const profileDoc = await db.collection('profiles').findOne({ key: 'default_broker' });
     if (!profileDoc) {
       res.json(DEFAULT_BROKER);
@@ -1326,7 +1341,7 @@ app.get('/api/profile', async (_req: Request, res: Response) => {
 app.post('/api/profile', async (req: Request, res: Response) => {
   const profile = req.body;
   try {
-    const db = await getDb();
+    const db = await getDb(req);
     const now = new Date();
     await db.collection('profiles').updateOne(
       { key: 'default_broker' },
@@ -2191,7 +2206,7 @@ app.post('/api/reports/generate', async (req: Request, res: Response) => {
   // 1. Check MongoDB first for idempotency by requestId
   if (process.env.MONGODB_URI) {
     try {
-      const db = await getDb();
+      const db = await getDb(req);
       const existing = await db.collection('reports').findOne({ requestId });
       if (existing) {
         const { _id, ...rest } = existing;
@@ -2204,7 +2219,8 @@ app.post('/api/reports/generate', async (req: Request, res: Response) => {
   }
 
   // 2. If identical requestId is currently running in-flight, coalesce onto same Promise
-  const existingFlight = inFlightReportGenerations.get(requestId);
+  const flightKey = JSON.stringify([req.academy?.user.uuid || null, requestId]);
+  const existingFlight = inFlightReportGenerations.get(flightKey);
   if (existingFlight) {
     try {
       const existingResult = await existingFlight;
@@ -2458,7 +2474,7 @@ ${noComparablesGuardrail}
     };
 
     if (saveDraft && process.env.MONGODB_URI) {
-      const db = await getDb();
+      const db = await getDb(req);
       try {
         await db.collection('reports').updateOne(
           { requestId },
@@ -2497,7 +2513,7 @@ ${noComparablesGuardrail}
     };
   })();
 
-  inFlightReportGenerations.set(requestId, executionPromise);
+  inFlightReportGenerations.set(flightKey, executionPromise);
   try {
     const result = await executionPromise;
     res.json(result);
@@ -2509,7 +2525,7 @@ ${noComparablesGuardrail}
       error: classified.userMessage,
     });
   } finally {
-    inFlightReportGenerations.delete(requestId);
+    inFlightReportGenerations.delete(flightKey);
   }
 });
 
