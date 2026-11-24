@@ -307,7 +307,7 @@ function parseManagementFeeText(rawLine: string): {
   monthlyAvg: number | null;
 } {
   const clean = rawLine.replace(/\s+/g, '');
-  if (/無管理費|免管理費|0元/.test(clean)) {
+  if (/^(?:無管理費|免管理費|免收|無)(?:[。；;，,]|$)/.test(clean)) {
     return { raw: rawLine.trim(), amount: 0, period: 'monthly', monthlyAvg: 0 };
   }
   const m = clean.match(/([\d,]+)\s*元?(?:[\/／每]?\s*(半年|雙月|季|年|月))?/);
@@ -318,6 +318,7 @@ function parseManagementFeeText(rawLine: string): {
   if (!Number.isFinite(amount)) {
     return { raw: rawLine.trim(), amount: null, period: 'unknown', monthlyAvg: null };
   }
+  if (amount === 0) return { raw: rawLine.trim(), amount: 0, period: 'monthly', monthlyAvg: 0 };
 
   let period: ManagementFeePeriod = 'unknown';
   const unitToken = m[2] || '';
@@ -952,7 +953,7 @@ export function parsePacificRenderedListing(
   return {
     ...listing,
     pageType: 'single_listing',
-    pageTypeReason: '已讀取太平洋房屋公開頁面載入後的物件規格。',
+    pageTypeReason: '已讀取太平洋房屋官方公開物件規格。',
     parsedFields: {
       ...parsedFields,
       sourcePlatform: listing.sourcePlatform,
@@ -1180,7 +1181,7 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     }
   }
 
-  const typeM = text.match(/(?:物件型態|建物型態|型態|類型)[\s：:]*(電梯大樓|住宅大樓|華廈|透天別墅|公寓|別墅)/) ||
+  const typeM = text.match(/(?:物件型態|建物型態|型態|類型)[\s：:]*(電梯大樓|住宅大樓|華廈|透天別墅|透天|公寓|別墅)/) ||
     text.match(/([\d.]+\s*年\s*(電梯大樓|住宅大樓|華廈|透天別墅|公寓|別墅)\s*(?:屋齡)?型態)/);
   if (typeM) {
     const mapped = mapPropertyTypeToken(typeM[2] || typeM[1]);
@@ -1196,7 +1197,7 @@ export function parsePastedListingTextDeterministic(rawText: string): {
     setField('parkingType', '無車位', 'recorded', '貼上文字車位：無車位');
   } else if (parkLineM?.[1] && !/^無/.test(parkLineM[1].trim())) {
     const pText = parkLineM[1].trim();
-    if (/坪|平面|機械|含售金|含在總價|私有|共有/.test(pText)) {
+    if (/有車位|坪|平面|機械|含售金|含在總價|私有|共有/.test(pText)) {
       setField('hasParking', true, 'recorded', `貼上文字車位：「${parkLineM[0].trim()}」`);
       const paM = pText.match(/([\d.]+)\s*坪/);
       if (paM && parsedFields.parkingArea == null) {
@@ -1285,3 +1286,4 @@ export const PORTAL_TEST_FIXTURES = {
     `,
   },
 };
+

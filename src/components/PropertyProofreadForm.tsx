@@ -15,6 +15,7 @@ import {
   calculateUnitPrice,
   calculatePublicRatio,
   calculatePropertyCompleteness,
+  resolvePropertyFieldStatus,
   computeManagementFeeMonthly,
   formatManagementFee,
   formatFloor,
@@ -216,7 +217,7 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
   };
 
   const renderStatusBadge = (field: string) => {
-    const status = formData.fieldStatus?.[field] || 'pending';
+    const status = resolvePropertyFieldStatus(formData, field);
     if (status === 'conflict') {
       return (
         <button
@@ -981,3 +982,4 @@ export const PropertyProofreadForm: React.FC<PropertyProofreadFormProps> = ({
     </div>
   );
 };
+

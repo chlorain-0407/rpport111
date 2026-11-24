@@ -7,6 +7,8 @@ import { parseArgs } from 'node:util';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { getDb, initDbIndexes } from './src/server/db';
 import { readPacificListing } from './src/server/pacificListing';
+import { readPacificPublicListing } from './src/server/pacificPublicListing';
+import { REPORT_ADVICE_RULE, sanitizeGeneratedAdvice } from './src/server/reportAdvice';
 import {
   DEMO_PROPERTIES,
   DEFAULT_BROKER,
@@ -1619,8 +1621,15 @@ app.post('/api/extract/url', async (req: Request, res: Response) => {
   const tParseStart = Date.now();
   let parsedPortal = parsePortalListingHtml(url, rawBody);
   if (parsedPortal.pageType === 'template_only' && parsedPortal.sourcePlatform === '太平洋房屋' && parsedPortal.sourceListingId) {
-    const rendered = await readPacificListing(parsedPortal.sourceListingId, clientAbortController.signal);
-    if (rendered) parsedPortal = parsePacificRenderedListing(parsedPortal, rendered) || parsedPortal;
+    const publicListing = await readPacificPublicListing(parsedPortal.sourceListingId, rawBody, clientAbortController.signal);
+    if (publicListing.status === 'not_found') {
+      parsedPortal.pageType = 'delisted_or_redirected';
+      parsedPortal.pageTypeReason = '太平洋官網目前查無此物件，可能已下架。請核對物件編號或改貼原頁文字／截圖；未呼叫 AI。';
+    } else {
+      const visible = publicListing.status === 'ok' ? publicListing.visible :
+        await readPacificListing(parsedPortal.sourceListingId, clientAbortController.signal);
+      if (visible) parsedPortal = parsePacificRenderedListing(parsedPortal, visible) || parsedPortal;
+    }
     if (clientAbortController.signal.aborted) return;
   }
 
@@ -2333,7 +2342,8 @@ ${metrics.budgetSummary ? `- 買方預算程式精算比對：${metrics.budgetSu
 3. 0 與 空白 的區分：在銷售進度中，數字為 0 代表「已確認為 0 次」；欄位為 null 代表「尚無紀錄」，不可將 null 寫成 0，也不可將 0 寫成尚無紀錄。
 4. 實價成交與在售競品嚴格分表與區分口徑，不得混淆開價與成交價。
 5. 隱私絕對隔離：報告對外絕不可出現屋主底價、急售原因、買方電話/LINE 或任何內部機密備註。
-6. 必須回傳嚴格合法 JSON。`;
+6. ${REPORT_ADVICE_RULE}
+7. 必須回傳嚴格合法 JSON。`;
 
   let userPrompt = '';
 
@@ -2428,7 +2438,7 @@ ${noComparablesGuardrail}
       throw new ClassifiedAiError('AI_VALIDATION', 502, 'AI 未回傳合法 JSON 報告結構，請重試。');
     }
 
-    const reportData = JSON.parse(jsonMatch[0]);
+    const reportData = sanitizeGeneratedAdvice(JSON.parse(jsonMatch[0]));
     const validation = validateGeneratedReportStructure(reportData);
     if (!validation.valid) {
       throw new ClassifiedAiError(
@@ -2565,7 +2575,8 @@ ${feedback || '請依最新物件市場定位重寫，加強數據依據，更�
 【規範】
 1. 嚴守台灣成屋住宅房仲專業用語與繁體中文。
 2. 保留原有的客觀事實數據，絕不可捏造不存在的成交案例、學區、通勤時間或違反隱私（禁止輸出底價或聯絡資訊）。
-3. 請回傳合法 JSON。`;
+3. ${REPORT_ADVICE_RULE}
+4. 請回傳合法 JSON。`;
 
     const aiRes = await callGeminiWithResilience({
       contents: prompt,
@@ -2594,7 +2605,7 @@ ${feedback || '請依最新物件市場定位重寫，加強數據依據，更�
     if (!jsonMatch) {
       throw new ClassifiedAiError('AI_VALIDATION', 502, 'AI 回傳之章節格式不完整，原有章節已保留。');
     }
-    const result = JSON.parse(jsonMatch[0]);
+    const result = sanitizeGeneratedAdvice(JSON.parse(jsonMatch[0]));
     if (!result.proposedContent || !String(result.proposedContent).trim()) {
       throw new ClassifiedAiError('AI_VALIDATION', 502, 'AI 未產出有效章節內容，原有章節已保留。');
     }
@@ -2651,3 +2662,4 @@ async function startServer() {
 }
 
 startServer();
+
